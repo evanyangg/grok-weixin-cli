@@ -1,9 +1,10 @@
 # grok-weixin-cli
 
-把微信（WeChat）连接到 Grok。提供两种用法：
+把微信（WeChat）连接到 Grok。提供三种用法：
 
-- **实时机器人**：在你的电脑或服务器上运行 `grok-weixin start`，微信里发消息，几秒内收到 Grok 的回复。
-- **Grok Bot 插件（MCP）**：把微信变成 Grok Bot 能调用的工具，让你的 Grok Bot 读微信、回微信、往你微信里推送简报。
+- **实时机器人**：在你的电脑或服务器上运行 `grok-weixin start`，微信里发消息，几秒内收到 Grok 的回复。默认后端是独立的 Cursor agent，或 xAI API。
+- **Grok Bot 插件（MCP）**：把微信变成工具，让 Grok Bot 直接读微信、回微信。这会消费微信游标，不是下面的桥接。
+- **可选的 Grok Bot 桥接**：`provider=grok-bot`。微信仍由本进程收发，官方 Routine webhook 只负责叫醒你当前的 Bot，自定义 MCP 再领取队列并提交回复。它不是官方微信渠道，默认也不自动发送。说明见 [docs/grok-bot-bridge.zh.md](docs/grok-bot-bridge.zh.md)。仓库里的代码不会切换机器上已经在跑的 `grok-weixin-cli@0.1.0`。
 
 不需要安装 OpenClaw。微信协议部分（iLink Bot API：扫码登录、长轮询收消息、发消息、"正在输入"状态、图片解密）移植自腾讯的 [`@tencent-weixin/openclaw-weixin`](https://www.npmjs.com/package/@tencent-weixin/openclaw-weixin)（MIT）。官方的 `@tencent-weixin/openclaw-weixin-cli` 只是一个调用 `openclaw plugins install` 的安装器。
 
@@ -13,6 +14,7 @@
 - [选择用法](#选择用法)
 - [用法一：实时机器人](#用法一实时机器人)
 - [用法二：Grok Bot 插件](#用法二grok-bot-插件)
+- [用法三：当前 Grok Bot 的桥接](#用法三当前-grok-bot-的桥接)
 - [命令](#命令)
 - [配置](#配置)
 - [安全](#安全)
@@ -55,7 +57,7 @@ flowchart LR
 | 主动推送 | 不支持 | 支持，例如每天早上把简报发到微信 |
 | 计费 | Cursor 账号额度，或 xAI API 按量 | Grok Bot 所在账号的额度 |
 
-两种可以同时用，但同一个状态目录下只能有一个程序在接收消息（见[安全](#安全)）。
+实时机器人和旧版 MCP 插件不能同时接收同一个状态目录。`grok-bot` 桥接同样独占这个目录的长轮询；它运行时，旧的 `weixin_get_messages` 和 `weixin_send_message` 会拒绝工作，避免新旧各回一封。详见[安全](#安全)。
 
 ## 用法一：实时机器人
 
@@ -229,6 +231,35 @@ flowchart TD
 
 也可以用本地路径：`"command": "node", "args": ["/path/to/grok-weixin-cli/cli.mjs", "mcp"]`。
 
+## 用法三：当前 Grok Bot 的桥接
+
+默认仍是 `cursor`。把 `provider` 设为 `grok-bot` 之后，`start` 不再调用 Cursor 或 xAI。它把通过白名单的消息写入本机队列，向你在环境变量里配置的 Routine webhook 发一次叫醒，再由 `bridge-mcp` 把回复交回微信。
+
+HTTP 200 只表示 Bot 的一次 run 已开始。MCP 进程本身不会叫醒 Bot，也不会让微信历史逐条出现在当前聊天里。webhook 地址、字段名和工具名都不是官方 SDK。完整的已核实边界、占位配置、自定义契约、切换和回滚见 [docs/grok-bot-bridge.zh.md](docs/grok-bot-bridge.zh.md)。
+
+占位启动（不要写入真实密钥）：
+
+```bash
+export GROK_WEIXIN_STATE_DIR=/path/to/isolated-grok-weixin-bridge
+export GROK_WEIXIN_PROVIDER=grok-bot
+export GROK_WEIXIN_ROUTINE_WEBHOOK_URL=https://example.invalid/replace-with-routine-post-url
+export GROK_WEIXIN_ROUTINE_WEBHOOK_TOKEN=replace-with-routine-sender-key
+
+node cli.mjs bridge-init --bot-binding weixin-assistant
+node cli.mjs bridge-status
+# 自动发送仍关闭。确认缺失 group_id 不能证明是单聊之后，才对本目录授权：
+# node cli.mjs bridge-authorize --scope owner --accept-unverified-direct
+node cli.mjs start
+```
+
+MCP 用另一个进程，并且必须是同一状态目录：
+
+```bash
+node cli.mjs bridge-mcp
+```
+
+带有 `group_id` 的消息会拒绝。没有 `group_id` 只能记为未验证，不能当成已证明的单聊。`allowFrom=*` 会拒绝启动。
+
 ## 命令
 
 | 命令 | 说明 |
@@ -237,7 +268,13 @@ flowchart TD
 | `login` | 扫码连接或重新连接微信 |
 | `start` | 在前台启动实时机器人 |
 | `stop` | 停止后台运行的机器人 |
-| `mcp` | 以 MCP 服务器运行 |
+| `mcp` | 以旧版 MCP 服务器运行，直接读微信 |
+| `bridge-init` | 初始化 Grok Bot 桥接。不自动发送，不打印令牌 |
+| `bridge-authorize` | 只给当前状态目录授权主人自动发送或确认发送 |
+| `bridge-revoke` | 撤销该授权 |
+| `bridge-resolve` | 关闭不确定的发送，或在你确认微信未发出后允许再提交一次 |
+| `bridge-status` | 查看桥接状态，不打印密钥 |
+| `bridge-mcp` | 以桥接 MCP 运行，只访问队列 |
 | `cursor-login` | 在浏览器中登录 Cursor |
 | `models` | 列出 Cursor 账号可用的 Grok 模型 |
 | `ask <text>` | 在终端问 Grok 一句话，测试后端 |
@@ -266,7 +303,7 @@ flowchart TD
 
 | 配置项 | 默认值 | 环境变量 | 说明 |
 |---|---|---|---|
-| `provider` | `cursor` | `GROK_WEIXIN_PROVIDER` | `cursor` 或 `xai` |
+| `provider` | `cursor` | `GROK_WEIXIN_PROVIDER` | `cursor`、`xai` 或 `grok-bot`。`grok-bot` 不调用模型 |
 | `cursorModel` | `grok-4.7` | | `provider=cursor` 时的模型，用 `models` 查看可选值 |
 | `cursorApiKey` | | `CURSOR_API_KEY`、`CURSOR_API_KEY_FILE`、`CURSOR_SERVICE_ACCOUNT_KEY` | 不填则使用 `cursor-login` 的登录凭据（`~/.cursor/sdk/auth.json`，90 天有效） |
 | `apiKey` | | `XAI_API_KEY` | xAI API Key |
@@ -274,9 +311,19 @@ flowchart TD
 | `apiBaseUrl` | `https://api.x.ai/v1` | `XAI_BASE_URL` | `provider=xai` 时的接口地址 |
 | `systemPrompt` | 中文助手提示词 | | 系统提示词 |
 | `historyTurns` | `20` | | `provider=xai` 时每个用户保留的对话轮数 |
-| `allowFrom` | `[]` | | 允许对话的微信 userId，逗号分隔。为空时只允许扫码的账号主人，`*` 表示所有人 |
+| `allowFrom` | `[]` | | 允许对话的微信 userId，逗号分隔。为空时只允许扫码的账号主人，`*` 表示所有人。`grok-bot` 拒绝 `*` |
 
 环境变量优先于配置文件。状态目录可以用 `GROK_WEIXIN_STATE_DIR` 修改。
+
+`grok-bot` 的 webhook 不写入 `config.json`：
+
+| 环境变量 | 说明 |
+|---|---|
+| `GROK_WEIXIN_ROUTINE_WEBHOOK_URL` | 当前 Bot 的 routine 面板上的 POST 地址。必须是 `https` |
+| `GROK_WEIXIN_ROUTINE_WEBHOOK_TOKEN` | 该面板上的 sender key。不要写进仓库或命令行参数 |
+| `GROK_WEIXIN_BRIDGE_WAKE_MAX_PER_HOUR` | 本进程叫醒上限，默认 30，代码封顶 60。不是官方限额 |
+
+官方 routine 限额以 [Skills and routines](https://docs.x.ai/grok-bot/skills-routines-and-automations) 当时页面为准。2026-11-23 读到的页面写的是全部 routine 合计每小时 300 次、单个 routine 每小时 200 次。
 
 ### 本地文件
 
@@ -289,11 +336,13 @@ flowchart TD
 | `history/` | `provider=xai` 的对话记录 |
 | `cursor-agents.json`、`cursor-workspace/` | `provider=cursor` 的 agent 记录和空工作目录 |
 | `pending-login.json`、`login-qr.png` | 未完成的扫码登录（5 分钟内重新运行会继续使用） |
-| `poller.json`、`bot.log` | 正在运行的机器人 pid 和后台日志 |
+| `poller.json`、`bot.log` | 正在运行的机器人 pid 和后台日志。桥接会把 `mode` 写成 `grok-bot` |
+| `bridge-grant.json`、`bridge-mcp.token`、`bridge-queue.json`、`bridge-secrets.json` | 仅 `grok-bot`。授权、MCP 令牌、队列和 `context_token`。敏感文件权限 600 |
 
 ## 安全
 
-- **默认只回复账号主人。** 扫码的那个微信号以外的消息会被忽略，避免别人消耗你的额度。用 `allowFrom` 放开。
+- **默认只回复账号主人。** 扫码的那个微信号以外的消息会被忽略，避免别人消耗你的额度。用 `allowFrom` 放开。`grok-bot` 不允许 `allowFrom=*`，并且在本机执行 `bridge-authorize` 之前不会自动发送。带 `group_id` 的消息直接丢弃；没有该字段也不能证明是单聊。
+- **桥接回复不能指定接收人。** MCP 只能回复已经领取的那一条。结果不确定时不会自动重发。同一账号下的其他 Bot 能看到这台电脑上的文件，本地令牌不是 Bot 之间的隔离边界。详见 [docs/grok-bot-bridge.zh.md](docs/grok-bot-bridge.zh.md)。
 - **Cursor agent 没有终端和文件权限。** 工具只有网页搜索和网页抓取，工作目录是空文件夹。
 - **插件把微信内容当作数据。** `SKILL.md` 要求 Grok Bot 不执行微信消息里的指令，没有主人同意不给别人发消息。
 - **同一时间只有一个程序接收消息。** `grok-weixin start` 运行时，同一状态目录下的 `weixin_get_messages` 会拒绝读取，两个 `start` 也不能同时运行。
@@ -321,15 +370,24 @@ lib/credentials.mjs      凭据自动查找与验证
 lib/media.mjs            图片下载与 AES-128-ECB 解密
 lib/messages.mjs         消息解析、Markdown 过滤、拆分发送、发送人过滤
 lib/markdown-filter.mjs  从官方插件转译的 Markdown 过滤器
-lib/bot.mjs              实时机器人主循环
+lib/bot.mjs              实时机器人主循环（cursor / xai）
 lib/backends/cursor.mjs  Cursor SDK 后端
 lib/backends/xai.mjs     xAI API 后端
 lib/grok.mjs             xAI chat completions 客户端
-lib/mcp.mjs              MCP 服务器
+lib/mcp.mjs              旧版 MCP 服务器（直接读微信）
+lib/bridge/              grok-bot 队列、叫醒、发送和自定义 MCP
 lib/store.mjs            本地状态与配置
+docs/grok-bot-bridge.zh.md  桥接说明、契约、切换与回滚
 ```
 
-本地调试 MCP 服务器：
+本地检查桥接（不需要真实凭据）：
+
+```bash
+npm test
+npm run check
+```
+
+本地调试旧版 MCP 服务器：
 
 ```bash
 npx @modelcontextprotocol/inspector node cli.mjs mcp

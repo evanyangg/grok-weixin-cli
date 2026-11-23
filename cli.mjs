@@ -196,9 +196,12 @@ async function connectWeixin({ interactive, verifyCode, waitSeconds, force }) {
 // ── bot process ─────────────────────────────────────────────────────────────
 
 async function createBackend(config) {
+  if (config.provider === "grok-bot") {
+    throw new Error("provider=grok-bot 不调用模型。请用 grok-weixin start 运行桥接，不要用 ask。");
+  }
   if (config.provider === "xai") return createXaiBackend(config);
   if (config.provider === "cursor") return createCursorBackend(config);
-  throw new Error(`未知 provider: ${config.provider}（可选: cursor, xai）`);
+  throw new Error(`未知 provider: ${config.provider}（可选: cursor, xai, grok-bot）`);
 }
 
 async function start() {
@@ -208,6 +211,16 @@ async function start() {
     process.exit(1);
   }
   const config = loadConfig();
+  if (config.provider === "grok-bot") {
+    const { runBridge } = await import("./lib/bridge/runtime.mjs");
+    try {
+      await runBridge({ dir: stateDir(), account, config, env: process.env, manageSignals: true });
+    } catch (err) {
+      error(err.message || "桥接启动失败");
+      process.exit(1);
+    }
+    return;
+  }
   let backend;
   try {
     backend = await createBackend(config);
@@ -258,6 +271,10 @@ function stop() {
 // ── other commands ──────────────────────────────────────────────────────────
 
 async function listModels() {
+  if (loadConfig().provider === "grok-bot") {
+    error("provider=grok-bot 没有模型列表。它只唤醒当前 Grok Bot，不调用 Cursor 或 xAI。");
+    process.exit(1);
+  }
   const config = loadConfig();
   const sdk = await loadSdk();
   const models = await sdk.Cursor.models.list({ apiKey: config.cursorApiKey || undefined });
@@ -290,6 +307,21 @@ async function status() {
   const config = loadConfig();
   const pid = activePollerPid();
   console.log(`  状态目录: ${stateDir()}`);
+  if (config.provider === "grok-bot") {
+    const { bridgeSummary } = await import("./lib/bridge/queue.mjs");
+    const summary = bridgeSummary(stateDir());
+    console.log(`  微信:     ${account ? "已连接（标识已省略）" : "未连接"}`);
+    console.log("  后端:     Grok Bot bridge（不调用 Cursor / xAI，不是官方微信渠道）");
+    console.log(`  Bot 绑定: ${summary.botBinding || "未初始化"}`);
+    console.log(`  群策略:   ${summary.groupPolicy}`);
+    console.log(`  主人自动发送: ${summary.autoSend ? "已对本机授权" : "关闭"}`);
+    console.log(`  确认发送: ${summary.confirmSend ? "已对本机授权" : "关闭"}`);
+    console.log(`  Webhook:  ${summary.webhookConfigured ? "已配置" : "未配置"}`);
+    console.log(`  待办:     ${summary.pending}`);
+    console.log(`  允许用户: ${config.allowFrom.length ? "已填写明确列表" : "仅账号主人"}`);
+    console.log(`  机器人:   ${pid ? `运行中 (pid ${pid})` : "未运行"}`);
+    return;
+  }
   console.log(`  微信:     ${account ? `已连接 (bot=${account.accountId}, 主人=${account.userId ?? "未知"})` : "未连接"}`);
   if (config.provider === "xai") {
     console.log(`  后端:     xAI API (${config.apiKey ? "Key 已配置" : "Key 未配置"})`);
@@ -341,7 +373,13 @@ function help() {
     start                在前台启动机器人
     stop                 停止后台运行的机器人
     status               查看连接与配置状态
-    mcp                  以 MCP 服务器 (stdio) 运行，给 Grok Bot 等 MCP 客户端提供微信工具
+    mcp                  以旧版 MCP 服务器 (stdio) 运行，直接读微信并发消息
+    bridge-init          初始化 Grok Bot 桥接（不自动发送，不打印令牌）
+    bridge-authorize     仅对本状态目录授权主人自动发送或确认发送
+    bridge-revoke        撤销本状态目录的发送授权
+    bridge-resolve       关闭或在你确认微信未发出后允许再提交一次不确定的发送
+    bridge-status        查看桥接授权、待办和 webhook 是否已配置（不打印密钥）
+    bridge-mcp           以桥接 MCP 服务器 (stdio) 运行，只领取队列、不长轮询微信
     cursor-login         在浏览器中登录 Cursor 账号
     models               列出 Cursor 账号可用的 Grok 模型
     ask <text>           不经过微信，直接在终端问 Grok 一句话（测试后端）
@@ -356,6 +394,14 @@ function help() {
     --wait <秒>          最多等待扫码多久，默认 480
     --daemon             绑定后在后台启动机器人（--non-interactive 时默认开启）
     --no-start           只完成绑定，不启动机器人
+    --bot-binding <id>   bridge-init 使用的 Bot 绑定名（不是微信标识，也不是密钥）
+    --scope <scope>      owner、confirm-send，撤销时还可以是 all
+    --accept-unverified-direct
+                         确认：缺失 group_id 不能证明是单聊，仍授权当前目录发送
+    --rotate-token       重新生成桥接 MCP 令牌
+    --outbound <id>      bridge-resolve 的出站任务
+    --decision <close|allow-resend>
+    --i-checked-wechat   确认微信里没有发出，才允许再提交一次
 
   退出码: 0 完成，1 出错，2 等待用户操作（扫码/验证码），重新运行同一条命令即可继续
 
@@ -364,9 +410,103 @@ function help() {
     → ~/.grok-weixin/config.json → cursor-login 保存的登录
 
   其他环境变量:
-    GROK_WEIXIN_PROVIDER  临时切换后端 (cursor / xai)
+    GROK_WEIXIN_PROVIDER  临时切换后端 (cursor / xai / grok-bot)
     GROK_WEIXIN_STATE_DIR 状态目录，默认 ~/.grok-weixin
+    GROK_WEIXIN_ROUTINE_WEBHOOK_URL / GROK_WEIXIN_ROUTINE_WEBHOOK_TOKEN
+                          只在 grok-bot 进程环境里提供，不要写进仓库或命令行
 `);
+}
+
+async function runBridgeCommand(command, flags) {
+  const dir = stateDir();
+  if (command === "bridge-status") {
+    const { bridgeSummary } = await import("./lib/bridge/queue.mjs");
+    console.log(JSON.stringify({ provider: loadConfig().provider, ...bridgeSummary(dir) }, null, 2));
+    return;
+  }
+  if (command === "bridge-mcp") {
+    const { runBridgeMcp } = await import("./lib/bridge/tools.mjs");
+    await runBridgeMcp({ dir });
+    return;
+  }
+  if (command === "bridge-init") {
+    const { assertBotBinding } = await import("./lib/bridge/policy.mjs");
+    const { initBridge } = await import("./lib/bridge/queue.mjs");
+    let binding;
+    try {
+      binding = assertBotBinding(flags["bot-binding"] || "");
+    } catch (err) {
+      error(err.message);
+      process.exit(1);
+    }
+    try {
+      const result = initBridge(dir, binding, { rotateToken: Boolean(flags["rotate-token"]) });
+      log(`桥接已初始化。binding=${result.botBinding}`);
+      log(`MCP 令牌文件（权限 600，命令不会打印令牌）: ${result.tokenFile}`);
+      if (result.created) log("令牌已写入该文件。请在本机读取后配置到当前 Bot，不要贴进聊天、仓库或微信。");
+      else log("沿用已有令牌。若要更换，请加 --rotate-token，并同步更新 Bot 侧配置。");
+      log("自动发送仍关闭。说明文档里的历史许可不会对这个状态目录生效。");
+    } catch (err) {
+      error(err.message);
+      process.exit(1);
+    }
+    return;
+  }
+  if (command === "bridge-authorize") {
+    const scope = flags.scope;
+    if (scope !== "owner" && scope !== "confirm-send") {
+      error("scope 只能是 owner 或 confirm-send。不接受 *。");
+      process.exit(1);
+    }
+    if (!flags["accept-unverified-direct"]) {
+      error("公开的 iLink 说明只把 group_id 记为客户端类型中的可选字段。字段缺失不能证明是单聊。");
+      error("自动发送保持关闭。若仍要授权当前这一个状态目录，请同时传入 --accept-unverified-direct。");
+      error("带有 group_id 的消息仍会被拒绝。附件、旧配置或历史许可都不会自动生效。");
+      process.exit(1);
+    }
+    const { authorizeConfirm, authorizeOwnerAuto } = await import("./lib/bridge/queue.mjs");
+    try {
+      if (scope === "owner") authorizeOwnerAuto(dir);
+      else authorizeConfirm(dir);
+    } catch (err) {
+      error(err.message);
+      process.exit(1);
+    }
+    log(`已为当前状态目录授权 ${scope}。范围只包括这一目录里、通过白名单且未被识别为群的会话。`);
+    return;
+  }
+  if (command === "bridge-revoke") {
+    const { revokeGrant } = await import("./lib/bridge/queue.mjs");
+    try {
+      revokeGrant(dir, flags.scope || "all");
+    } catch (err) {
+      error(err.message);
+      process.exit(1);
+    }
+    log(`已撤销 ${flags.scope || "all"}。`);
+    return;
+  }
+  if (command === "bridge-resolve") {
+    if (flags.decision !== "close" && flags.decision !== "allow-resend") {
+      error("decision 只能是 close 或 allow-resend。");
+      process.exit(1);
+    }
+    if (flags.decision === "allow-resend" && !flags["i-checked-wechat"]) {
+      error("结果不确定时不能直接重发。请先在微信里确认没有发出，再加 --i-checked-wechat。");
+      process.exit(1);
+    }
+    if (!flags.outbound) {
+      error("请传入 --outbound <id>。");
+      process.exit(1);
+    }
+    const { resolveOutbound } = await import("./lib/bridge/queue.mjs");
+    const result = await resolveOutbound(dir, flags.outbound, flags.decision, Date.now());
+    if (!result.ok) {
+      error(`无法处理: ${result.error || "unknown"}`);
+      process.exit(1);
+    }
+    log(flags.decision === "close" ? "已关闭该出站，不会重发。" : "已允许再次领取原入站。桥接不会自动重发。");
+  }
 }
 
 // ── main ────────────────────────────────────────────────────────────────────
@@ -386,6 +526,13 @@ function parseFlags() {
         wait: { type: "string", default: "480" },
         daemon: { type: "boolean", default: false },
         "no-start": { type: "boolean", default: false },
+        "bot-binding": { type: "string" },
+        scope: { type: "string" },
+        "accept-unverified-direct": { type: "boolean", default: false },
+        "rotate-token": { type: "boolean", default: false },
+        outbound: { type: "string" },
+        decision: { type: "string" },
+        "i-checked-wechat": { type: "boolean", default: false },
       },
     }).values;
   } catch (err) {
@@ -401,7 +548,11 @@ switch (command) {
     const interactive = !flags["non-interactive"] && Boolean(process.stdin.isTTY);
     const waitSeconds = Math.max(10, Number(flags.wait) || 480);
     if (command === "install") {
-      await setupCredentials({ cursorKey: flags["cursor-key"], xaiKey: flags["xai-key"], interactive });
+      if (loadConfig().provider === "grok-bot") {
+        log("provider=grok-bot：跳过 Cursor/xAI 凭据。桥接不调用模型，这次安装也不会打开自动发送。");
+      } else {
+        await setupCredentials({ cursorKey: flags["cursor-key"], xaiKey: flags["xai-key"], interactive });
+      }
     }
     await connectWeixin({
       interactive,
@@ -429,6 +580,14 @@ switch (command) {
     await runMcpServer();
     break;
   }
+  case "bridge-init":
+  case "bridge-authorize":
+  case "bridge-revoke":
+  case "bridge-resolve":
+  case "bridge-status":
+  case "bridge-mcp":
+    await runBridgeCommand(command, parseFlags());
+    break;
   case "cursor-login":
     try {
       await cursorLogin();
