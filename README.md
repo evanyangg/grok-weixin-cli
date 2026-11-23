@@ -66,38 +66,56 @@ flowchart LR
   - Cursor 账号（默认）：浏览器登录，或在 [Cursor Dashboard → Integrations](https://cursor.com/dashboard/integrations) 创建的 API Key
   - xAI API Key：在 [console.x.ai](https://console.x.ai) 创建
 
-### 安装
+### 一键安装
 
 ```bash
-git clone https://github.com/evanyangg/grok-weixin-cli.git
-cd grok-weixin-cli
-npm install
-npm install -g .        # 可选：全局安装 grok-weixin 命令；不装就用 node cli.mjs 代替
+npx -y grok-weixin-cli@latest install
 ```
 
-### 一键启动
-
-```bash
-grok-weixin install
-```
+（发布到 npm 之前，用 `git clone` 本仓库后 `npm install && node cli.mjs install`。）
 
 ```mermaid
 flowchart TD
-    A["grok-weixin install"] --> B{"provider?"}
-    B -- "cursor（默认）" --> C["粘贴 Cursor API Key<br/>或回车改用浏览器登录"]
-    B -- "xai" --> D["输入 XAI_API_KEY"]
-    C --> E["终端显示二维码"]
-    D --> E
+    A["npx -y grok-weixin-cli@latest install"] --> B{"自动查找凭据"}
+    B -- "找到" --> V["调用 API 验证 Key"]
+    B -- "没找到" --> C["选择：Cursor Key / xAI Key / 浏览器登录 Cursor"]
+    C --> V
+    V -- "无效" --> C
+    V -- "有效" --> E["生成微信二维码<br/>终端显示 + PNG 图片 + 链接"]
     E --> F["手机微信扫码并确认<br/>（可能需要输入手机上的数字）"]
     F --> G["保存凭据到 ~/.grok-weixin"]
     G --> H["启动机器人，开始收发消息"]
 ```
 
-以后再启动只需要：
+凭据按这个顺序自动查找，找到第一个就用：
+
+1. 环境变量 `CURSOR_API_KEY`、`CURSOR_API_KEY_FILE`（文件路径）、`CURSOR_SERVICE_ACCOUNT_KEY`
+2. 环境变量 `XAI_API_KEY`
+3. `~/.grok-weixin/config.json` 里保存过的 Key
+4. `grok-weixin cursor-login` 保存的 Cursor 登录
+
+也可以直接传入：`install --cursor-key <key>` 或 `install --xai-key <key>`。通过参数或终端输入的 Key 验证通过后才会保存（权限 600）；来自环境变量的 Key 不会写入文件。
+
+以后再启动只需要 `grok-weixin start`（前台）或 `grok-weixin install --daemon`（后台，已绑定会跳过扫码）。
+
+### 在 Grok Bot 或脚本里安装（无交互）
+
+没有终端可以提问时（或加了 `--non-interactive`），`install` 不会等待输入，而是用退出码和固定格式的输出行告诉调用方下一步：
 
 ```bash
-grok-weixin start
+CURSOR_API_KEY=... npx -y grok-weixin-cli@latest install --non-interactive
 ```
+
+| 输出 / 退出码 | 含义 | 下一步 |
+|---|---|---|
+| `CREDENTIALS=missing`，退出码 1 | 没找到凭据 | 设置 `CURSOR_API_KEY` 或 `XAI_API_KEY` 后重新运行 |
+| `CREDENTIALS=invalid`，退出码 1 | Key 无效 | 换一个 Key |
+| `QR_PNG=<路径>`、`QR_URL=<链接>` | 二维码已生成 | 把图片或链接发给用户扫码 |
+| `STATUS=need_verify_code`，退出码 2 | 手机上显示了数字验证码 | 加上 `--verify-code <数字>` 重新运行 |
+| `STATUS=timeout`，退出码 2 | 等待超时（默认 480 秒，`--wait` 修改） | 重新运行同一条命令，5 分钟内二维码不变 |
+| `WEIXIN=connected`、`BOT_PID=<pid>` | 绑定完成，机器人已在后台运行 | 日志在 `~/.grok-weixin/bot.log`，`grok-weixin stop` 停止 |
+
+在 Grok Bot 里，Key 建议通过它的密钥请求（secret request）提供，它会以环境变量的形式出现在云电脑上，不要直接贴在聊天里。Grok Bot 是否自动给云电脑注入 Cursor Key 取决于你的账号设置，`install` 会先自动查找，找不到才需要提供。
 
 ### 分步验证
 
@@ -138,7 +156,7 @@ grok-weixin start            # 启动后在手机微信里给机器人发消息
 
 ### 长期运行
 
-机器人需要一直运行。关掉终端或电脑睡眠后就收不到回复了。在服务器上可以用 pm2：
+机器人需要一直运行。关掉终端或电脑睡眠后就收不到回复了。最简单的是 `grok-weixin install --daemon`，它在后台运行，但机器重启后不会自动恢复。需要开机自启时可以用 pm2：
 
 ```bash
 npm install -g pm2
@@ -146,7 +164,7 @@ pm2 start "grok-weixin start" --name grok-weixin
 pm2 save
 ```
 
-扫码登录需要交互，请先在服务器上手动运行一次 `grok-weixin login`。
+扫码登录需要交互，请先在服务器上运行一次 `grok-weixin install --no-start`。
 
 ## 用法二：Grok Bot 插件
 
@@ -223,9 +241,10 @@ flowchart TD
 
 | 命令 | 说明 |
 |---|---|
-| `install` | 配置后端凭据 → 扫码连接微信 → 启动机器人 |
+| `install` | 查找或输入凭据 → 验证 → 扫码连接微信 → 启动机器人 |
 | `login` | 扫码连接或重新连接微信 |
-| `start` | 启动实时机器人 |
+| `start` | 在前台启动实时机器人 |
+| `stop` | 停止后台运行的机器人 |
 | `mcp` | 以 MCP 服务器运行 |
 | `cursor-login` | 在浏览器中登录 Cursor |
 | `models` | 列出 Cursor 账号可用的 Grok 模型 |
@@ -233,6 +252,19 @@ flowchart TD
 | `status` | 查看连接与配置状态 |
 | `config [key] [value]` | 查看或修改配置 |
 | `logout` | 删除本地微信凭据与聊天记录 |
+
+`install` 和 `login` 的选项：
+
+| 选项 | 说明 |
+|---|---|
+| `--cursor-key <key>` / `--xai-key <key>` | 直接传入 Key（仅 `install`） |
+| `--non-interactive` | 不在终端提问；没有终端时自动开启 |
+| `--verify-code <数字>` | 手机微信显示的数字验证码 |
+| `--wait <秒>` | 最多等待扫码多久，默认 480 |
+| `--daemon` | 绑定后在后台启动机器人（`--non-interactive` 时默认开启，仅 `install`） |
+| `--no-start` | 只完成绑定，不启动机器人（仅 `install`） |
+
+退出码：0 完成，1 出错，2 等待用户扫码或输入验证码（重新运行同一条命令即可继续）。
 
 微信内命令（实时机器人）：`/reset` 清空上下文，`/model` 查看模型，`/help` 帮助。
 
@@ -244,7 +276,7 @@ flowchart TD
 |---|---|---|---|
 | `provider` | `cursor` | `GROK_WEIXIN_PROVIDER` | `cursor` 或 `xai` |
 | `cursorModel` | `grok-4.7` | | `provider=cursor` 时的模型，用 `models` 查看可选值 |
-| `cursorApiKey` | | `CURSOR_API_KEY` | 不填则使用 `cursor-login` 的登录凭据（`~/.cursor/sdk/auth.json`，90 天有效） |
+| `cursorApiKey` | | `CURSOR_API_KEY`、`CURSOR_API_KEY_FILE`、`CURSOR_SERVICE_ACCOUNT_KEY` | 不填则使用 `cursor-login` 的登录凭据（`~/.cursor/sdk/auth.json`，90 天有效） |
 | `apiKey` | | `XAI_API_KEY` | xAI API Key |
 | `model` | `grok-4` | `GROK_MODEL` | `provider=xai` 时的模型 |
 | `apiBaseUrl` | `https://api.x.ai/v1` | `XAI_BASE_URL` | `provider=xai` 时的接口地址 |
@@ -264,6 +296,8 @@ flowchart TD
 | `context-tokens.json` | 每个联系人的会话 token |
 | `history/` | `provider=xai` 的对话记录 |
 | `cursor-agents.json`、`cursor-workspace/` | `provider=cursor` 的 agent 记录和空工作目录 |
+| `pending-login.json`、`login-qr.png` | 未完成的扫码登录（5 分钟内重新运行会继续使用） |
+| `poller.json`、`bot.log` | 正在运行的机器人 pid 和后台日志 |
 
 ## 安全
 
@@ -290,7 +324,8 @@ flowchart TD
 ```text
 cli.mjs                  命令入口
 lib/ilink.mjs            微信 iLink API：请求头、getupdates、sendmessage、typing
-lib/login.mjs            扫码登录
+lib/login.mjs            扫码登录（可跨多次运行继续）
+lib/credentials.mjs      凭据自动查找与验证
 lib/media.mjs            图片下载与 AES-128-ECB 解密
 lib/messages.mjs         消息解析、Markdown 过滤、拆分发送、发送人过滤
 lib/markdown-filter.mjs  从官方插件转译的 Markdown 过滤器
