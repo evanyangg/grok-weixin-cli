@@ -1,0 +1,18 @@
+{
+  "name": "weixin",
+  "displayName": "WeChat (微信)",
+  "version": "0.1.0",
+  "description": "Read and send WeChat (微信) messages through a Weixin iLink bot: scan-to-login, fetch new messages, and reply or send briefings to your phone.",
+  "author": {
+    "name": "evanyangg"
+  },
+  "homepage": "https://github.com/evanyangg/grok-weixin-cli",
+  "repository": "https://github.com/evanyangg/grok-weixin-cli",
+  "license": "MIT",
+  "logo": "assets/logo.svg",
+  "keywords": ["wechat", "weixin", "微信", "chat", "messaging", "mcp"],
+  "category": "integrations",
+  "tags": ["wechat", "weixin", "messaging", "mcp"],
+  "mcpServers": "./mcp.json",
+  "skills": "./skills/"
+}
