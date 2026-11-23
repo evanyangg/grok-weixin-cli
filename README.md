@@ -72,7 +72,7 @@ flowchart LR
 npx -y grok-weixin-cli@latest install
 ```
 
-（发布到 npm 之前，用 `git clone` 本仓库后 `npm install && node cli.mjs install`。）
+（也可以 `git clone` 本仓库后运行 `npm install && node cli.mjs install`。）
 
 ```mermaid
 flowchart TD
@@ -188,12 +188,11 @@ skills/weixin/SKILL.md       告诉 Grok Bot 怎么登录、读消息、回复�
 assets/logo.svg
 ```
 
-### 发布和安装流程
+### 安装流程
 
 ```mermaid
 flowchart TD
-    A["npm publish<br/>发布 grok-weixin-cli"] --> B["插件代码在 GitHub 上"]
-    B --> C{"安装到 Grok Bot"}
+    C{"安装到 Grok Bot"}
     C -- "自定义 MCP" --> D["命令：npx -y grok-weixin-cli@latest mcp"]
     C -- "官方插件市场" --> E["提交到 github.com/cursor/plugins<br/>等待审核"]
     D --> F["对 Grok Bot 说：连接我的微信"]
@@ -203,22 +202,15 @@ flowchart TD
     H --> I["Grok Bot 创建定时任务"]
 ```
 
-1. **发布到 npm**（`mcp.json` 依靠 `npx` 下载并启动这个包）：
-
-   ```bash
-   npm login
-   npm publish
-   ```
-
-2. **装进 Grok Bot**，二选一：
+1. **装进 Grok Bot**，二选一：
    - 在 Grok Bot 里添加自定义 MCP 服务器，命令 `npx`，参数 `-y grok-weixin-cli@latest mcp`。
    - 把插件提交到 [cursor/plugins](https://github.com/cursor/plugins)，审核通过后可以从市场安装。
 
-3. **连接微信**：对 Grok Bot 说"连接我的微信"。它会调用 `weixin_login_start` 把二维码发给你，你用手机扫码确认，它再调用 `weixin_login_check` 完成登录，并发一条测试消息给你。
+2. **连接微信**：对 Grok Bot 说"连接我的微信"。它会调用 `weixin_login_start` 把二维码发给你，你用手机扫码确认，它再调用 `weixin_login_check` 完成登录，并发一条测试消息给你。
 
-4. **设置自动回复**：对 Grok Bot 说"每 5 分钟检查一次微信，有新消息就回复"。它会创建一个定时任务。
+3. **设置自动回复**：对 Grok Bot 说"每 5 分钟检查一次微信，有新消息就回复"。它会创建一个定时任务。
 
-5. **主动推送**：例如"每天早上 8 点把我的日程和未读邮件总结发到我微信"。
+4. **主动推送**：例如"每天早上 8 点把我的日程和未读邮件总结发到我微信"。
 
 ### 不用 Grok Bot，在其他 MCP 客户端里使用
 
@@ -235,7 +227,7 @@ flowchart TD
 }
 ```
 
-没有发布到 npm 时，改成本地路径：`"command": "node", "args": ["/path/to/grok-weixin-cli/cli.mjs", "mcp"]`。
+也可以用本地路径：`"command": "node", "args": ["/path/to/grok-weixin-cli/cli.mjs", "mcp"]`。
 
 ## 命令
 
