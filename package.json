@@ -1,7 +1,7 @@
 {
   "name": "grok-weixin-cli",
-  "version": "0.1.0",
-  "description": "Connect WeChat (Weixin iLink bot) to Grok — realtime bot via Cursor SDK or xAI API, plus an MCP server / Grok Bot plugin",
+  "version": "0.2.0",
+  "description": "Connect WeChat (Weixin iLink bot) to Grok — Cursor SDK, xAI API, or an optional bridge that wakes your existing Grok Bot",
   "license": "MIT",
   "type": "module",
   "author": "evanyangg",
@@ -20,9 +20,15 @@
   "files": [
     "cli.mjs",
     "lib/",
+    "docs/",
+    "examples/",
     "README.md",
     "LICENSE"
   ],
+  "scripts": {
+    "test": "node --test --test-concurrency=1",
+    "check": "find cli.mjs lib test -name '*.mjs' -print0 | xargs -0 -n1 node --check"
+  },
   "engines": {
     "node": ">=22.13"
   },
